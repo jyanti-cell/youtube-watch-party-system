@@ -1,25 +1,38 @@
-
 import express from "express";
-import http from "http";
 import cors from "cors";
+import { createServer } from "http";
 import { Server } from "socket.io";
 import { randomBytes } from "crypto";
 
 const app = express();
-const server = http.createServer(app);
 
-app.use(cors());
+app.use(cors({ origin: "*" }));
 app.use(express.json());
 
-const io = new Server(server, {
+const rooms = new Map();
+
+app.get("/", (_req, res) => {
+  res.send("YouTube Watch Party server is running.");
+});
+
+app.get("/health", (_req, res) => {
+  res.json({ status: "ok", activeRooms: rooms.size });
+});
+
+const httpServer = createServer(app);
+
+const io = new Server(httpServer, {
   cors: {
     origin: "*",
     methods: ["GET", "POST"]
   }
 });
 
-const PORT = process.env.PORT || 5000;
-const rooms = new Map();
+function normalizeRoomCode(code) {
+  return typeof code === "string"
+    ? code.trim().toUpperCase()
+    : "";
+}
 
 function generateRoomCode() {
   let code;
@@ -31,60 +44,58 @@ function generateRoomCode() {
   return code;
 }
 
-function getRoomUsers(room) {
-  return Array.from(room.users.values());
-}
-
-function emitRoomUsers(roomCode) {
-  const room = rooms.get(roomCode);
-
-  if (room) {
-    io.to(roomCode).emit("room_users", {
-      users: getRoomUsers(room)
-    });
-  }
-}
-
-function canControl(room, socketId) {
-  const user = room.users.get(socketId);
-  return user && ["Host", "Moderator"].includes(user.role);
+function publicUsers(room) {
+  return [...room.users.entries()].map(([id, user]) => ({
+    id,
+    name: user.name,
+    role: user.role
+  }));
 }
 
 function sendError(socket, message) {
   socket.emit("error_message", { message });
 }
 
+function canControl(room, socketId) {
+  const user = room?.users.get(socketId);
+
+  return Boolean(
+    user && ["Host", "Moderator"].includes(user.role)
+  );
+}
+
+function emitUsers(roomCode) {
+  const room = rooms.get(roomCode);
+
+  if (room) {
+    io.to(roomCode).emit("room_users", {
+      users: publicUsers(room)
+    });
+  }
+}
+
 function applyPlaybackAction(room, action, data = {}) {
   if (!["play", "pause", "seek", "change_video"].includes(action)) {
-    return false;
+    return null;
   }
 
   if (action === "play") {
     room.playing = true;
-  }
-
-  if (action === "pause") {
+  } else if (action === "pause") {
     room.playing = false;
-  }
+  } else if (action === "seek") {
+    const currentTime = Number(data.currentTime);
 
-  if (action === "seek") {
-    const time = Number(data.currentTime);
-
-    if (!Number.isFinite(time) || time < 0) {
-      return false;
+    if (!Number.isFinite(currentTime) || currentTime < 0) {
+      return null;
     }
 
-    room.currentTime = time;
-  }
+    room.currentTime = currentTime;
+  } else if (action === "change_video") {
+    const videoId = String(data.videoId || "");
 
-  if (action === "change_video") {
-    const videoId = data.videoId;
-
-    if (
-      typeof videoId !== "string" ||
-      !/^[a-zA-Z0-9_-]{11}$/.test(videoId)
-    ) {
-      return false;
+    if (!/^[A-Za-z0-9_-]{11}$/.test(videoId)) {
+      return null;
     }
 
     room.videoId = videoId;
@@ -92,30 +103,56 @@ function applyPlaybackAction(room, action, data = {}) {
     room.playing = false;
   }
 
-  return true;
-}
-
-function broadcastPlayback(roomCode, room, action) {
-  io.to(roomCode).emit("playback_updated", {
+  return {
     action,
     videoId: room.videoId,
     currentTime: room.currentTime,
     playing: room.playing
-  });
+  };
 }
 
-app.get("/health", (req, res) => {
-  res.json({
-    status: "Server is running",
-    activeRooms: rooms.size
-  });
-});
+function broadcastPlayback(roomCode, update) {
+  io.to(roomCode).emit("playback_updated", update);
+}
+
+function removeParticipant(roomCode, userId) {
+  const room = rooms.get(roomCode);
+
+  if (!room || !room.users.has(userId)) {
+    return null;
+  }
+
+  const removed = room.users.get(userId);
+
+  room.users.delete(userId);
+
+  const targetSocket = io.sockets.sockets.get(userId);
+
+  if (targetSocket) {
+    targetSocket.leave(roomCode);
+
+    targetSocket.emit("participant_removed", {
+      message: "You were removed from the room."
+    });
+  }
+
+  emitUsers(roomCode);
+
+  console.log(`${removed.name} removed from room ${roomCode}`);
+
+  return removed;
+}
 
 io.on("connection", (socket) => {
-  console.log("User connected:", socket.id);
+  console.log("Connected:", socket.id);
 
-  // CREATE ROOM
   socket.on("create_room", ({ name } = {}) => {
+    const cleanName = String(name || "").trim().slice(0, 40);
+
+    if (!cleanName) {
+      return sendError(socket, "Please enter your name.");
+    }
+
     const roomCode = generateRoomCode();
 
     const room = {
@@ -128,8 +165,7 @@ io.on("connection", (socket) => {
     };
 
     room.users.set(socket.id, {
-      id: socket.id,
-      name: name?.trim() || "Host",
+      name: cleanName,
       role: "Host"
     });
 
@@ -142,160 +178,111 @@ io.on("connection", (socket) => {
       videoId: room.videoId,
       currentTime: room.currentTime,
       playing: room.playing,
-      users: getRoomUsers(room),
+      users: publicUsers(room),
       requests: []
     });
 
-    console.log("Room created:", roomCode);
+    console.log(`Room ${roomCode} created by ${cleanName}`);
   });
 
-  // JOIN ROOM
   socket.on("join_room", ({ name, roomCode } = {}) => {
-    const code = roomCode?.trim().toUpperCase();
+    const code = normalizeRoomCode(roomCode);
+    const cleanName = String(name || "").trim().slice(0, 40);
+
     const room = rooms.get(code);
 
-    if (!room) {
-      sendError(socket, "Room not found. Check the room code.");
-      return;
+    if (!cleanName || !code) {
+      return sendError(socket, "Enter your name and room code.");
     }
 
-    if (room.users.has(socket.id)) return;
+    if (!room) {
+      return sendError(socket, "Room not found. Check the room code.");
+    }
 
-    const user = {
-      id: socket.id,
-      name: name?.trim() || "Participant",
+    room.users.set(socket.id, {
+      name: cleanName,
       role: "Participant"
-    };
+    });
 
-    room.users.set(socket.id, user);
     socket.join(code);
 
     socket.emit("room_joined", {
       roomCode: code,
-      role: user.role,
+      role: "Participant",
       videoId: room.videoId,
       currentTime: room.currentTime,
       playing: room.playing,
-      users: getRoomUsers(room),
-      requests: room.requests
+      users: publicUsers(room),
+      requests: []
     });
 
     socket.to(code).emit("user_joined", {
-      users: getRoomUsers(room)
+      users: publicUsers(room)
     });
 
-    emitRoomUsers(code);
-
-    console.log(user.name, "joined room:", code);
+    console.log(`${cleanName} joined room ${code}`);
   });
 
-  // PLAYBACK ACTIONS
   socket.on("playback_action", ({ roomCode, action, ...data } = {}) => {
-    const room = rooms.get(roomCode);
+    const code = normalizeRoomCode(roomCode);
+    const room = rooms.get(code);
 
-    if (!room || !canControl(room, socket.id)) {
-      sendError(socket, "You do not have permission to control playback.");
-      return;
+    if (!room || !room.users.has(socket.id)) {
+      return sendError(socket, "You are not in this room.");
     }
 
-    if (!applyPlaybackAction(room, action, data)) {
-      sendError(socket, "Invalid playback action or video details.");
-      return;
+    if (!canControl(room, socket.id)) {
+      return sendError(
+        socket,
+        "Only the Host or Moderator can control playback."
+      );
     }
 
-    broadcastPlayback(roomCode, room, action);
+    const update = applyPlaybackAction(room, action, data);
+
+    if (!update) {
+      return sendError(
+        socket,
+        "Invalid playback action or YouTube video ID."
+      );
+    }
+
+    broadcastPlayback(code, update);
   });
 
-  // SYNC POSITION
-  socket.on("time_update", ({ roomCode, currentTime } = {}) => {
-    const room = rooms.get(roomCode);
-
-    if (!room || !canControl(room, socket.id)) return;
-
-    if (
-      typeof currentTime !== "number" ||
-      !Number.isFinite(currentTime)
-    ) {
-      return;
-    }
-
-    room.currentTime = Math.max(0, currentTime);
-  });
-
-  // ASSIGN MODERATOR
-  socket.on("assign_role", ({ roomCode, userId, role } = {}) => {
-    const room = rooms.get(roomCode);
-
-    if (!room || room.hostId !== socket.id) {
-      sendError(socket, "Only the Host can assign roles.");
-      return;
-    }
-
-    if (!["Moderator", "Participant"].includes(role)) {
-      sendError(socket, "Invalid role.");
-      return;
-    }
-
-    const targetUser = room.users.get(userId);
-
-    if (!targetUser || userId === room.hostId) return;
-
-    targetUser.role = role;
-
-    io.to(userId).emit("role_updated", {
-      userId,
-      role,
-      users: getRoomUsers(room)
-    });
-
-    emitRoomUsers(roomCode);
-
-    console.log(targetUser.name, "role updated to:", role);
-  });
-
-  // REMOVE PARTICIPANT
-  socket.on("remove_participant", ({ roomCode, userId } = {}) => {
-    const room = rooms.get(roomCode);
-
-    if (!room || room.hostId !== socket.id) {
-      sendError(socket, "Only the Host can remove participants.");
-      return;
-    }
-
-    if (!userId || userId === room.hostId) return;
-
-    const targetUser = room.users.get(userId);
-
-    if (!targetUser) return;
-
-    room.users.delete(userId);
-
-    const targetSocket = io.sockets.sockets.get(userId);
-
-    if (targetSocket) {
-      targetSocket.leave(roomCode);
-      targetSocket.emit("participant_removed", {
-        message: "You were removed from the room."
-      });
-    }
-
-    emitRoomUsers(roomCode);
-
-    console.log(targetUser.name, "removed from room:", roomCode);
-  });
-
-  // PARTICIPANT REQUEST
   socket.on("request_action", ({ roomCode, action, ...data } = {}) => {
-    const room = rooms.get(roomCode);
+    const code = normalizeRoomCode(roomCode);
+    const room = rooms.get(code);
     const user = room?.users.get(socket.id);
 
-    if (!room || !user || user.role !== "Participant") {
-      return;
+    if (!room || !user) {
+      return sendError(socket, "You are not in this room.");
+    }
+
+    if (user.role !== "Participant") {
+      return sendError(
+        socket,
+        "Your role does not require approval."
+      );
     }
 
     if (!["play", "pause", "seek", "change_video"].includes(action)) {
-      sendError(socket, "Invalid playback request.");
-      return;
+      return sendError(socket, "Invalid playback request.");
+    }
+
+    if (
+      action === "change_video" &&
+      !/^[A-Za-z0-9_-]{11}$/.test(String(data.videoId || ""))
+    ) {
+      return sendError(socket, "Invalid YouTube video ID.");
+    }
+
+    if (
+      action === "seek" &&
+      (!Number.isFinite(Number(data.currentTime)) ||
+        Number(data.currentTime) < 0)
+    ) {
+      return sendError(socket, "Invalid seek position.");
     }
 
     const request = {
@@ -303,7 +290,12 @@ io.on("connection", (socket) => {
       userId: socket.id,
       name: user.name,
       action,
-      ...data
+      ...(action === "seek"
+        ? { currentTime: Number(data.currentTime) }
+        : {}),
+      ...(action === "change_video"
+        ? { videoId: data.videoId }
+        : {})
     };
 
     room.requests.push(request);
@@ -312,49 +304,63 @@ io.on("connection", (socket) => {
       requests: room.requests
     });
 
-    console.log("Playback request:", action, "from", user.name);
-  });
+    socket.emit("request_sent", {
+      requestId: request.id
+    });
 
-  // APPROVE OR REJECT REQUEST
-  socket.on("approve_request", ({ roomCode, requestId, approved } = {}) => {
-    const room = rooms.get(roomCode);
+    console.log(
+      `Request ${action} from ${user.name} sent to Host in ${code}`
+    );
+  });
+    socket.on("approve_request", ({ roomCode, requestId, approved } = {}) => {
+    const code = normalizeRoomCode(roomCode);
+    const room = rooms.get(code);
 
     if (!room || !canControl(room, socket.id)) {
-      sendError(socket, "You cannot approve this request.");
-      return;
+      return sendError(
+        socket,
+        "Only the Host or Moderator can approve requests."
+      );
     }
 
     const index = room.requests.findIndex(
       (request) => request.id === requestId
     );
 
-    if (index === -1) return;
+    if (index === -1) {
+      return sendError(socket, "Request not found or already handled.");
+    }
 
     const request = room.requests.splice(index, 1)[0];
 
     if (approved) {
-      const requestData = {
-        currentTime: request.currentTime,
-        videoId: request.videoId
-      };
-
-      const valid = applyPlaybackAction(
+      const update = applyPlaybackAction(
         room,
         request.action,
-        requestData
+        request
       );
 
-      if (valid) {
-        broadcastPlayback(roomCode, room, request.action);
+      if (update) {
+        broadcastPlayback(code, update);
       } else {
-        io.to(request.userId).emit("error_message", {
-          message: "Your playback request contained invalid details."
-        });
+        const requester = io.sockets.sockets.get(request.userId);
+
+        if (requester) {
+          sendError(
+            requester,
+            "The requested action could not be applied."
+          );
+        }
       }
     } else {
-      io.to(request.userId).emit("error_message", {
-        message: "Your playback request was rejected."
-      });
+      const requester = io.sockets.sockets.get(request.userId);
+
+      if (requester) {
+        sendError(
+          requester,
+          "Your request was rejected by the Host."
+        );
+      }
     }
 
     io.to(room.hostId).emit("request_updated", {
@@ -362,52 +368,146 @@ io.on("connection", (socket) => {
     });
   });
 
-  // LEAVE ROOM
-  socket.on("leave_room", ({ roomCode } = {}) => {
-    leaveRoom(socket, roomCode);
+  socket.on("assign_role", ({ roomCode, userId, role } = {}) => {
+    const code = normalizeRoomCode(roomCode);
+    const room = rooms.get(code);
+
+    if (!room || room.hostId !== socket.id) {
+      return sendError(socket, "Only the Host can assign roles.");
+    }
+
+    if (
+      !room.users.has(userId) ||
+      userId === room.hostId ||
+      !["Moderator", "Participant"].includes(role)
+    ) {
+      return sendError(socket, "Invalid participant or role.");
+    }
+
+    room.users.get(userId).role = role;
+
+    io.to(code).emit("role_updated", {
+      userId,
+      role,
+      users: publicUsers(room)
+    });
   });
 
-  // DISCONNECT
-  socket.on("disconnect", () => {
-    console.log("User disconnected:", socket.id);
+  socket.on("remove_participant", ({ roomCode, userId } = {}) => {
+    const code = normalizeRoomCode(roomCode);
+    const room = rooms.get(code);
 
-    for (const roomCode of [...rooms.keys()]) {
-      leaveRoom(socket, roomCode);
+    if (!room || room.hostId !== socket.id) {
+      socket.emit("remove_result", {
+        success: false,
+        message: "Only the Host can remove participants."
+      });
+      return;
+    }
+
+    if (userId === room.hostId) {
+      socket.emit("remove_result", {
+        success: false,
+        message: "Host cannot remove themselves."
+      });
+      return;
+    }
+
+    const removed = removeParticipant(code, userId);
+
+    socket.emit("remove_result", {
+      success: Boolean(removed),
+      message: removed
+        ? `${removed.name} removed successfully.`
+        : "Participant not found."
+    });
+  });
+
+  socket.on("leave_room", ({ roomCode } = {}) => {
+    const code = normalizeRoomCode(roomCode);
+    const room = rooms.get(code);
+
+    if (!room || !room.users.has(socket.id)) {
+      return;
+    }
+
+    const user = room.users.get(socket.id);
+
+    if (room.hostId === socket.id) {
+      io.to(code).emit("room_closed", {
+        message: "The Host has closed the room."
+      });
+
+      for (const userId of room.users.keys()) {
+        const memberSocket = io.sockets.sockets.get(userId);
+
+        if (memberSocket) {
+          memberSocket.leave(code);
+        }
+      }
+
+      rooms.delete(code);
+      console.log(`Room ${code} closed by Host`);
+      return;
+    }
+
+    room.users.delete(socket.id);
+    socket.leave(code);
+
+    io.to(code).emit("user_left", {
+      users: publicUsers(room),
+      name: user.name
+    });
+
+    console.log(`${user.name} left room ${code}`);
+  });
+
+  socket.on("time_update", ({ roomCode, currentTime } = {}) => {
+    const code = normalizeRoomCode(roomCode);
+    const room = rooms.get(code);
+
+    if (!room || !canControl(room, socket.id)) {
+      return;
+    }
+
+    const time = Number(currentTime);
+
+    if (Number.isFinite(time) && time >= 0) {
+      room.currentTime = time;
+    }
+  });
+
+  socket.on("disconnect", () => {
+    console.log("Disconnected:", socket.id);
+
+    for (const [roomCode, room] of rooms.entries()) {
+      if (!room.users.has(socket.id)) {
+        continue;
+      }
+
+      const user = room.users.get(socket.id);
+
+      if (room.hostId === socket.id) {
+        io.to(roomCode).emit("room_closed", {
+          message: "The Host has disconnected. Room closed."
+        });
+
+        rooms.delete(roomCode);
+        continue;
+      }
+
+      room.users.delete(socket.id);
+
+      io.to(roomCode).emit("user_left", {
+        users: publicUsers(room),
+        name: user.name
+      });
     }
   });
 });
 
-function leaveRoom(socket, roomCode) {
-  const room = rooms.get(roomCode);
+const PORT = process.env.PORT || 5000;
 
-  if (!room || !room.users.has(socket.id)) return;
-
-  const wasHost = room.hostId === socket.id;
-
-  room.users.delete(socket.id);
-  socket.leave(roomCode);
-
-  if (wasHost || room.users.size === 0) {
-    for (const userId of room.users.keys()) {
-      io.to(userId).emit("participant_removed", {
-        message: "The Host has closed the room."
-      });
-    }
-
-    io.to(roomCode).emit("room_closed");
-    rooms.delete(roomCode);
-
-    console.log("Room closed:", roomCode);
-    return;
-  }
-
-  io.to(roomCode).emit("user_left", {
-    users: getRoomUsers(room)
-  });
-
-  emitRoomUsers(roomCode);
-}
-
-server.listen(PORT, () => {
+httpServer.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
