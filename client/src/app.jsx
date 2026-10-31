@@ -3,7 +3,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { io } from "socket.io-client";
 import "./style.css";
 
-const SERVER_URL = "http://localhost:5000";
+const SERVER_URL = "https://youtube-watch-party-system-2.onrender.com";
 
 let socket;
 
