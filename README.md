@@ -1,49 +1,106 @@
+# 🎬 YouTube Watch Party System
 
-# YouTube Watch Party System
+### Watch Together. Stay Synchronized. Enjoy Together!
 
-A real-time web application where multiple users can watch YouTube videos together.
+A real-time YouTube Watch Party application that allows multiple users to watch YouTube videos together in a shared room.
 
-## Features
+## ✨ Key Features
 
-- Create a watch party room.
-- Join a room using a unique room code.
-- Synchronize YouTube video playback.
+- Create watch party rooms with unique room codes.
+- Join rooms using a room code.
+- Synchronize YouTube playback.
 - Host can assign Moderator roles.
 - Host can remove participants.
 - Moderators can control playback.
-- Participants can request playback actions.
+- Participants can request playback approval.
 - Real-time communication using Socket.IO.
 
-## Technology Stack
+## 👥 User Roles
 
-- React.js
-- Node.js
-- Express.js
-- Socket.IO
-- YouTube IFrame Player API
-- CSS
+- **Host:** Creates rooms, manages participants and assigns roles.
+- **Moderator:** Controls video playback.
+- **Participant:** Watches videos and requests playback permissions.
 
-## Project Structure
+## 🛠️ Technology Stack
 
-- client: Frontend application
-- server: Backend and WebSocket server
+| Technology | Purpose |
+|---|---|
+| React.js | Frontend |
+| Vite | Development and build tool |
+| CSS | Styling |
+| Node.js | Backend runtime |
+| Express.js | Server |
+| Socket.IO | Real-time communication |
+| YouTube IFrame API | Video playback |
 
-## Installation
+## 🏗️ Project Structure
 
-Install dependencies:
+```text
+youtube-watch-party-system/
+├── client/
+│   ├── src/
+│   │   ├── app.jsx
+│   │   ├── main.jsx
+│   │   └── style.css
+│   ├── index.html
+│   └── package.json
+├── server/
+│   ├── index.js
+│   └── package.json
+├── package.json
+├── README.md
+└── .gitignore
+```
 
+## 💻 Installation & Setup
+
+### 1. Clone the repository
+
+```bash
+git clone https://github.com/jyanti-cell/youtube-watch-party-system.git
+cd youtube-watch-party-system
+```
+
+### 2. Install dependencies
+
+```bash
 npm run install:all
+```
 
-## Run the Project
+### 3. Start the application
 
+```bash
 npm run dev
+```
 
-Frontend: http://localhost:5173
+### 4. Open in browser
 
-Backend: http://localhost:5000
+Frontend: `http://localhost:5173`
 
-## Architecture
+Backend: `http://localhost:5000`
 
-React frontend communicates with the Node.js backend using Socket.IO.
-The backend manages rooms, user roles, permissions and playback events.
-YouTube IFrame API is used to play videos.
+## 🔄 How It Works
+
+1. Host creates a watch party room.
+2. Server generates a unique room code.
+3. Participants join using the code.
+4. Socket.IO shares playback events in real time.
+5. Backend validates user permissions.
+6. Approved actions are synchronized across the room.
+
+## 🔮 Future Enhancements
+
+- User authentication.
+- Group chat.
+- Database integration.
+- Improved playback synchronization.
+- Responsive mobile interface.
+- Watch history and saved rooms.
+
+## 🎓 Project Purpose
+
+This project demonstrates real-time communication, client-server architecture, API integration, role-based access control and full-stack web development.
+
+---
+
+**Built with React, Node.js and Socket.IO.**
