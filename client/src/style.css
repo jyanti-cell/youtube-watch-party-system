@@ -35,11 +35,12 @@ button:disabled {
 }
 
 .navbar {
-  height: 76px;
-  padding: 0 7%;
+  min-height: 76px;
+  padding: 12px 7%;
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
   border-bottom: 1px solid #ffffff12;
   background: #0b0d19cc;
 }
@@ -440,6 +441,7 @@ input::placeholder {
 .room-info {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 10px;
   color: #9296b0;
   font-size: 11px;
@@ -471,7 +473,7 @@ input::placeholder {
   }
 
   .navbar {
-    padding: 0 4%;
+    padding: 12px 4%;
   }
 }
 
@@ -488,17 +490,34 @@ input::placeholder {
     grid-template-columns: 1fr;
   }
 
+  .dashboard {
+    width: 94%;
+    padding-top: 22px;
+  }
+
   .dashboard-heading {
     align-items: flex-start;
     gap: 15px;
+    flex-wrap: wrap;
   }
 
   .dashboard-heading h1 {
     font-size: 21px;
   }
 
+  .navbar {
+    min-height: 65px;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+
   .room-info {
-    display: none;
+    display: flex;
+    width: 100%;
+    justify-content: center;
+    padding: 12px 4%;
+    background: #151827;
+    border-bottom: 1px solid #ffffff15;
   }
 
   .video-tools {
@@ -511,5 +530,9 @@ input::placeholder {
 
   .player-section {
     padding: 14px;
+  }
+
+  .panel {
+    padding: 16px;
   }
 }
